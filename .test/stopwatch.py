@@ -147,9 +147,10 @@ class StopwatchTest(object):
             return self.upper
 
 
-    def __init__(self, cpu):
+    def __init__(self, cpu, verbose=False):
         self.passed = True
         self.cpu = cpu
+        self.verbose = verbose
         self.timer = self.Timer(on_change=self.update_pending)
         self.button = self.Button(on_change=self.update_pending)
         self.hex = self.HexDisplay()
@@ -169,12 +170,13 @@ class StopwatchTest(object):
         self.cpu.add_mmio(0xFF200020, self.hex.lower_reg)
         self.cpu.add_mmio(0xFF200030, self.hex.upper_reg)
 
+    def __del__(self):
+        self.timer.on_change = None
+        self.button.on_change = None
+
     def update_pending(self):
         """Recompute ipending based on current peripheral and CPU state."""
-        try:
-            ipending = self.cpu.get_ctl_reg(4)
-        except SystemError:
-            return
+        ipending = self.cpu.get_ctl_reg(4)
 
         # Timer IRQ0: TO bit set, ITO enabled in timer control
         if self.timer.to & 0x1 and self.timer.control_val & 0x1:
@@ -218,6 +220,7 @@ class StopwatchTest(object):
                 print('status: %08x' % self.cpu.get_ctl_reg(0))
                 print('ienable: %08x' % self.cpu.get_ctl_reg(3))
                 print('ipending: %08x' % self.cpu.get_ctl_reg(4))
+                print('Timer status reg: %08x' % self.timer.status())
                 print('Timer ctl reg: %08x' % self.timer.control_val)
             return
 
@@ -293,6 +296,10 @@ class StopwatchTest(object):
         # HEX3 (leading digit) may be blank (0x00) when the expected digit is '0' (0x3f)
         hex3_ok = (act_hex3 == s_tens) or (s_tens == 0x3f and act_hex3 == 0x00)
         ok = hex3_ok and (actual & 0x00ffffff) == (expected & 0x00ffffff)
+        if self.verbose:
+            print('%s: %.2f' % (note, val/100),)
+            print('\n'.join(display_ascii(self.read_hex()[0])))
+            print('')
         if not ok:
             print('check_hex(%.2f): %s FAIL' % (val/100, note))
             print('  expected: 0x%08x      actual: 0x%08x' % (expected, actual))
@@ -303,7 +310,7 @@ class StopwatchTest(object):
 
 
 
-def check_stopwatch(asm):
+def check_stopwatch(asm, debug=False):
 
     obj = nios2_as(asm.encode('utf-8'))
     r = require_symbols(obj, ['_start'])
@@ -311,47 +318,50 @@ def check_stopwatch(asm):
         return (False, r, "")
 
     cpu = Nios2(obj=obj)
-    test = StopwatchTest(cpu)
+    test = StopwatchTest(cpu, verbose=debug)
 
     # Run CPU briefly for initialization (sets up ienable, starts timer, etc.)
     test.run()
-    #print('After init - hex: 0x%08x 0x%08x' % test.read_hex())
+
+    # TODO: check that setup is correct?
 
     t = 0
-    test.check_hex(t)
+    test.check_hex(t, "initial zero value")
 
 
     # Simulate timer interrupts
     for i in range(1234):
         test.fire_timer()
         t += 1
-        test.check_hex(t, "in initial loop")
-        #print('After timer interrupt %d - hex: 0x%08x 0x%08x' % ((i+1,) + test.read_hex()))
-        #print('\n'.join(display_ascii(test.read_hex()[0])))
+        test.check_hex(t, "in initial timer loop")
 
     # Simulate a button press 
     # STOP Button
     test.push_button1()  # stop
 
-    test.check_hex(t, "after stop pressed")
+    test.check_hex(t, "after STOP pressed")
 
     for i in range(22):
         test.fire_timer(expect_running=False)
 
-    test.check_hex(t, "after stop pressed and ran for some timer loops")   # check it didn't advance any
-
-
+    test.check_hex(t, "Ran for some timer loops after STOP")   # check it didn't advance any
+    # START button
     test.push_button1() # start
 
     for i in range(50):
         test.fire_timer()
         t += 1
-        test.check_hex(t)
+        test.check_hex(t, "after resuming")
 
 
     test.push_button1() # stop
 
+    test.check_hex(t, "after STOP second time")
+
     test.push_button0() # reset
+
+    for i in range(11):
+        test.fire_timer(expect_running=False)
 
     t = 0
     test.check_hex(t, "after reset")
@@ -361,9 +371,23 @@ def check_stopwatch(asm):
     for i in range(50):
         test.fire_timer()
         t += 1
-        test.check_hex(t)
+        test.check_hex(t, "after START again")
+
+    test.push_button1() # stop
+
+    test.push_both_buttons() # start / reset
+    t = 0
+
+    for i in range(50):
+        test.fire_timer()
+        t += 1
+        test.check_hex(t, "after pressing START/RESET simultaneously")
 
 
     print('Passed all tests')
 
-check_stopwatch(sys.stdin.read())
+
+debug = False
+if len(sys.argv) > 1:
+    debug = True
+check_stopwatch(sys.stdin.read(), debug)
