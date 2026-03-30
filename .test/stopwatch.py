@@ -315,6 +315,7 @@ def check_stopwatch(asm, debug=False):
     obj = nios2_as(asm.encode('utf-8'))
     r = require_symbols(obj, ['_start'])
     if r is not None:
+        print('Error: failed to assemble')
         return (False, r, "")
 
     cpu = Nios2(obj=obj)
